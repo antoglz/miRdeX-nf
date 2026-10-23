@@ -25,13 +25,13 @@ process DOWNLOAD_DB {
         local input_file="\$2"
         local output_file="\$3"
 
-        # Correct the species names within the mirbase file
+        # Correct the species names within the miRBase file
         awk -v species_file="\$species_file" '
         BEGIN {
             # Save the species data into an array
             while (getline < species_file) {
                 split(\$0, arr, "\t");
-                id2species[arr[2]] = arr[4];
+                id2species[arr[1]] = arr[2];
             }
             close(species_file);
         }
@@ -46,11 +46,16 @@ process DOWNLOAD_DB {
                 split(\$0, arr, " ");
                 first_element = arr[1];
                 second_element = arr[2];
-                last_element = arr[length(arr)]
-                
-                # get the new species name
+
+                if (arr[length(arr)] == "stem-loop") {
+                    last_element = arr[length(arr)-1] " " arr[length(arr)];
+                } else {
+                    last_element = arr[length(arr)];
+                }
+
+                # Get the new species name
                 species = id2species[id];
-                print first_element" "second_element" "species" "last_element
+                print first_element" "second_element" "species" "last_element;
             } else {
                 print \$0;
             }
@@ -72,17 +77,32 @@ process DOWNLOAD_DB {
 
     # Download miRBase
     if [ ${mirbase} = true ]; then
-        # Download mirbase files
+
+        # Download miRBase files
         wget --no-check-certificate -P mirbase https://mirbase.org/download/mature.fa
         wget --no-check-certificate -P mirbase https://mirbase.org/download/hairpin.fa
-        wget --no-check-certificate -P mirbase https://mirbase.org/download/CURRENT/database_files/mirna_species.txt
-        awk '{gsub("<p>", ""); gsub("</p>", ""); gsub("<br>", "\\n"); print}' mirbase/mirna_species.txt > mirbase/mirbase_species.txt
-        
-        # Correct species names within the mirbase files
+
+        # Generate species table from miRBase FASTA files
+        awk '
+            /^>/ {
+                split(\$1, arr, "-");
+                id = substr(arr[1], 2);
+                species = \$3 " " \$4;
+
+                if (!(id in names))
+                    names[id] = species;
+            }
+            END {
+                for (id in names)
+                    print id "\t" names[id];
+            }
+        ' mirbase/hairpin.fa mirbase/mature.fa | sort > mirbase/mirbase_species.txt
+
+        # Correct species names within the miRBase files
         correct_mirbase_species_names mirbase/mirbase_species.txt mirbase/mature.fa mirbase/mature_mod.fa
         correct_mirbase_species_names mirbase/mirbase_species.txt mirbase/hairpin.fa mirbase/hairpin_mod.fa
 
-        # Create an string for the execution of 01-Database_id_resolver.sh
+        # Create a string for the execution of 01-Database_id_resolver.sh
         mirbase_files='--mirbase mirbase/mature_mod.fa --mhairpin mirbase/hairpin_mod.fa'
     fi
 
@@ -98,26 +118,26 @@ process DOWNLOAD_DB {
             srnaanno_files+="--srnaanno \$file "
         done
     fi
-
+    
     # Download PmiREN
     if [ ${pmiren} = true ]; then
-        wget --no-check-certificate -r --no-parent -nH --cut-dirs=1 -P pmiren --accept "*.fa" https://www.pmiren.com/ftp-download
+        pmiren_version="v3.2"
 
-        # Create an string for the execution of 01-Database_id_resolver.sh
-        for dir in pmiren/*; do
-            if [ -d "\$dir" ]; then
-                mature_file=\$(find "\$dir" -type f -name "*_mature.fa")
-                hairpin_file=\$(find "\$dir" -type f -name "*_hairpin.fa")
+        wget --no-check-certificate -r --no-parent -nH --cut-dirs=1 -P pmiren \\
+            --accept "*.fa" --reject "index.html*" --reject-regex '[?]' \\
+            https://www.pmiren.com/ftp-download/\$pmiren_version/
 
-                if [ -f "\$mature_file" ]; then
-                    pmiren_m_files+="--pmiren \$mature_file "
-                fi
+        # Create strings for the execution of 01-Database_id_resolver.sh
+        while IFS= read -r mature_file; do
+            pmiren_m_files+="--pmiren \$mature_file "
+        done < <(find pmiren/\$pmiren_version -type f -name "*_mature.fa" | sort)
 
-                if [ -f "\$hairpin_file" ]; then
-                    pmiren_p_files+="--phairpin \$hairpin_file "
-                fi
-            fi
-        done
+        while IFS= read -r hairpin_file; do
+            # Rename stemloop files to hairpin
+            new_hairpin_file="\${hairpin_file%_stemloop.fa}_hairpin.fa"
+            mv "\$hairpin_file" "\$new_hairpin_file"
+            pmiren_p_files+="--phairpin \$new_hairpin_file "
+        done < <(find pmiren/\$pmiren_version -type f -name "*_stemloop.fa" | sort)
     fi
 
     ## 1. RESOLVE IDENTIFIERS
