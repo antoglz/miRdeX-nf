@@ -229,6 +229,13 @@
           "description": "Comma-separated string indicating the databases to use for miRNA identification and their order of preference. The search proceeds sequentially through the listed databases until the species is found. Allowed databases are: miRBase, sRNAanno, and/or PmiREN.",
           "pattern": "^[A-Za-z0-9_]+(,[A-Za-z0-9_]+)*$"
         },
+        "species_synonyms": {
+          "type": "string",
+          "format": "file-path",
+          "exists": true,
+          "description": "Path to a TSV file mapping canonical species names to their synonyms for miRNA database harmonization.",
+          "fa_icon": "fas fa-leaf"
+        },
         "mirna_classes": {
           "type": "string",
           "default": "ref_miRNA,iso_5p,iso_3p,iso_add3p,iso_add5p,iso_snv_seed,iso_snv_central_offset,iso_snv_central,iso_snv_central_supp,iso_snv,Mixed,Mixed_shift,Undefined",

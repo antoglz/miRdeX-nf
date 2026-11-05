@@ -32,6 +32,7 @@ workflow PREPARE_MIRNA_DATABASES {
     take:
         species             // channel: val([species_name_1, species_name_2, ..., species_name_n])
         databases           // string: e.g. 'mirbase,pmiren,srnaanno'
+        species_synonyms    // path: TSV file containing species synonyms
 
     main:
 
@@ -60,7 +61,13 @@ workflow PREPARE_MIRNA_DATABASES {
     } else {
 
         // Download the required databases
-        DOWNLOAD_DB(species, download_mirbase, download_srnaanno, download_pmiren)
+        DOWNLOAD_DB(
+            species,
+            download_mirbase,
+            download_srnaanno,
+            download_pmiren,
+            species_synonyms
+        )
         ch_mirbase = DOWNLOAD_DB.out.mirbase
         ch_srnaanno = DOWNLOAD_DB.out.srnaanno
         ch_pmiren = DOWNLOAD_DB.out.pmiren

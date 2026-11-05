@@ -855,6 +855,7 @@ workflow MIRDEX {
                 ANNOTATION(
                     ch_fastq,
                     ch_species_names,
+                    file(params.species_synonyms),
                     params.databases,
                     params.substitutions,
                     params.five_add,
@@ -870,6 +871,7 @@ workflow MIRDEX {
                 ANNOTATION(
                     ch_fastq,
                     ch_species_names,
+                    file(params.species_synonyms),
                     params.databases,
                     params.substitutions,
                     params.five_add,

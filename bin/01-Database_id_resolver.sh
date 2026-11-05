@@ -180,53 +180,71 @@ get_PmiREN_species_ids (){
 
 #####################################################
 #
-#   This function is responsible for extracting
-#   the identifiers of the species present in
-#   miRBase from a FASTA file obtained from this
-#   database.
+#   This function extracts species identifiers and
+#   complete organism names from a miRBase FASTA file.
+#
+#   It extracts the species identifier from the FASTA
+#   sequence ID and the organism name from the fields
+#   following the miRBase accession number.
+#
+#   For mature miRNAs (MIMAT), the last field contains
+#   the miRNA name and is excluded.
+#
+#   For precursor miRNAs (MI), the last two fields
+#   contain the miRNA name and "stem-loop", and
+#   are excluded.
+#
+#   Duplicate identifier-organism pairs are removed.
 #
 #   Arguments:
-#       Fasta file path
-#       Output file path for the identifiers
-#           table (CSV)
+#       FASTA file containing miRBase sequences.
+#       Output CSV file for species identifiers.
+#       Temporary directory for sorting.
+#
+#   Output:
+#       CSV file with two columns:
+#           species_id,species_name
 #
 #####################################################
 
-get_mirbase_species_ids () {
+get_mirbase_species_ids() {
 
-    # Arguments
     local mirbase_fasta_path="${1}"
     local mirbase_species_id_table="${2}"
     local temporary_dir="${3}"
 
-    # Create a temporary file
-    temp_file=$(mktemp --tmpdir="$temporary_dir")
+    # Extract species identifiers and complete organism names
+    awk '
+        /^>/ {
+            # Extract species identifier
+            split($1, id_parts, "-")
+            id = substr(id_parts[1], 2)
 
-    # Extract ID and Species, remove duplicates, and save in CSV file
-    awk '/^>/ {
-        # Split the header into elements using space as the delimiter
-        split($0, arr, " ");
+            # Identify the last organism-name field
+            if ($2 ~ /^MIMAT[0-9]+$/) {
+                last = NF - 1
+            }
+            else if ($2 ~ /^MI[0-9]+$/ && $NF == "stem-loop") {
+                last = NF - 2
+            }
+            else {
+                next
+            }
 
-        # Get the species ID (first element before the dash)
-        id = substr(arr[1], 2, index(arr[1], "-") - 2);  # Remove the ">" and get the identifier
+            # Reconstruct the complete organism name
+            species = ""
+            for (i = 3; i <= last; i++) {
+                species = species (species == "" ? "" : " ") $i
+            }
 
-        # Print the ID followed by a comma and the elements between the second and the last
-        printf "%s,", id;
-
-        # Print the elements between the second and the last (excluding these two)
-        for (i=3; i<=length(arr)-1; i++) {
-            printf "%s ", arr[i];
+            # Print valid identifier-organism pairs
+            if (id != "" && species != "") {
+                print id "," species
+            }
         }
-        
-        # Print the last element
-        printf "\n";
-    }' "$mirbase_fasta_path" | sort -T "$temporary_dir" | uniq > "$temp_file"
-
-    # Remove white spaces from the end of each row
-    sed 's/[[:space:]]*$//' "$temp_file" > "$mirbase_species_id_table"
-
-    # Remove temporary file
-    rm "$temp_file"
+    ' "$mirbase_fasta_path" \
+        | sort -T "$temporary_dir" -u \
+        > "$mirbase_species_id_table"
 }
 
 
@@ -338,7 +356,7 @@ replace_mismatched_ids(){
 
     # Replace old identifiers with new ones
     while IFS=, read -r old_id new_id; do
-        sed -i "s/>$old_id/>$new_id/" $fasta_in_path
+        sed -i "s/>${old_id}-/>${new_id}-/" "$fasta_in_path"
     done < ./tmp_replace/old_new_ids.txt
 
     # Create output fasta file
@@ -496,6 +514,10 @@ prepare_sRNAanno_database(){
 
         # Read from the variable directly
         while IFS=$'\t' read -r scaffold name type start end point1 strand point2 seq_information; do
+            
+            # Skip empty records
+            [ -z "$seq_information" ] && continue
+            
             # Extract ID and sequence using parameter expansion
             id_field="${seq_information%%;seq=*}"
             id="${id_field##*ID=}"
@@ -527,6 +549,178 @@ prepare_sRNAanno_database(){
     awk 'BEGIN {FS=OFS=","} {temp=$4; $4=$5; $5=temp} 1' $path_file_ids_out > tmp.csv && mv tmp.csv $path_file_ids_out
 }
 
+
+#####################################################
+#
+#   Resolves duplicated species identifiers.
+#   The first species (in table order) keeps its
+#   identifier. Any later species with the same one
+#   gets a new one using the same strategy as
+#   change_the_id_using_name: first letter of the
+#   genus + two letters taken from the rest of the
+#   name, trying combinations until one is free.
+#   Only letters are used (dashes, digits, dots and
+#   spaces are ignored). If the letters run out,
+#   a number is appended to the original id.
+#
+#   Arguments:
+#       ids_table: CSV table (species,id_m,id_h,final_id)
+#       output_table: CSV with the resolved identifiers
+#       id_col: column with the identifier (default: 4)
+#       changes_table: (optional) species,old_id,new_id
+#
+#####################################################
+
+resolve_duplicated_species_ids() {
+
+    local ids_table="${1}"
+    local output_table="${2}"
+    local id_col="${3:-4}"
+    local changes_table="${4:-/dev/null}"
+
+    : > "$changes_table"
+
+    awk -F',' -v OFS=',' -v col="$id_col" -v changes="$changes_table" '
+        function new_id(name, old_id,    tmp, pool, g, n, i, j, k, cand) {
+            # Keep only letters; words separated by spaces
+            tmp = name
+            gsub(/[^A-Za-z]+/, " ", tmp)
+            sub(/^ +/, "", tmp)
+            # First letter of the genus
+            g = tolower(substr(tmp, 1, 1))
+            # Pool of letters: everything after the genus
+            sub(/^[^ ]* */, "", tmp)
+            gsub(/ /, "", tmp)
+            pool = tolower(tmp)
+            n = length(pool)
+
+            # Genus letter + 2 letters of the pool, until one is free
+            for (i = 1; i <= n; i++) {
+                for (j = (i == 1 ? 2 : 1); j <= n; j++) {
+                    cand = g substr(pool, i, 1) substr(pool, j, 1)
+                    if (!(cand in used)) return cand
+                }
+            }
+            # No letters left: try numbers
+            k = 2
+            while ((old_id k) in used) k++
+            return old_id k
+        }
+        # Pass 1: every identifier already in use
+        NR == FNR { used[$col] = 1; next }
+        # Pass 2: first one keeps it, the rest get a new one
+        {
+            id = $col
+            if (!(id in seen)) { seen[id] = 1; print; next }
+            nid = new_id($1, id)
+            used[nid] = 1
+            print $1, id, nid >> changes
+            $col = nid
+            print
+        }
+    ' "$ids_table" "$ids_table" > "$output_table"
+}
+
+
+#####################################################
+#
+#   Creates copies of the PmiREN FASTA files with all
+#   species identifiers in the headers replaced by
+#   the final one assigned in the identifiers table.
+#   It also removes FASTA records with empty or invalid
+#   sequences, preserving valid IUPAC nucleotide codes.
+#   The original files are not modified.
+#
+#   Arguments:
+#       ids_table: CSV table (species,id_m,id_h,final_id)
+#       files_list: list of FASTA files (space-separated)
+#       type: mature or hairpin
+#       output_dir: directory for the new files
+#
+#####################################################
+
+update_pmiren_fasta_ids() {
+
+    local ids_table="${1}"
+    local files_list="${2}"
+    local type="${3}"
+    local output_dir="${4}"
+
+    # Column of the table with the original identifier of this type of file
+    local old_id_col
+    case "$type" in
+        mature)  old_id_col=2 ;;
+        hairpin) old_id_col=3 ;;
+        *) echo "ERROR: type must be 'mature' or 'hairpin'" >&2; return 1 ;;
+    esac
+
+    mkdir -p "$output_dir"
+    local n_errors=0
+
+    for file in $files_list; do
+
+        # Species name from the file name (same as get_PmiREN_species_ids)
+        local species_name
+        species_name=$(basename "$file" | sed "s/_/ /g; s/${type}.fa//" | sed 's/[[:space:]]*$//')
+
+        # Original and new identifiers of the species
+        local ids old_id new_id
+        ids=$(awk -F',' -v sp="$species_name" -v c="$old_id_col" '$1 == sp { print $c "," $4; exit }' "$ids_table")
+        if [ -z "$ids" ]; then
+            echo "ERROR: '$species_name' ($file) not found in $ids_table" >&2
+            n_errors=$((n_errors + 1)); continue
+        fi
+        old_id="${ids%%,*}"
+        new_id="${ids##*,}"
+
+        # Replace identifiers in ALL headers and remove invalid FASTA records
+        local output_file="$output_dir/$(basename "$file")"
+        awk -v old="$old_id" -v new="$new_id" -v f="$file" '
+            function process_record(    p, seq) {
+                if (header == "") return
+
+                seq = sequence
+                gsub(/[[:space:]]/, "", seq)
+
+                if (seq == "" || seq ~ /[^ACGTURYSWKMBDHVNacgturyswkmbdhvn]/) {
+                    print "WARNING: Invalid sequence removed from " f ": " header > "/dev/stderr"
+                    return
+                }
+
+                p = index(header, "-")
+                if (p > 2) {
+                    print ">" new substr(header, p)
+                } else {
+                    print header
+                    other++
+                }
+                printf "%s", sequence
+            }
+
+            /^>/ {
+                process_record()
+                header = $0
+                sequence = ""
+                next
+            }
+            { sequence = sequence $0 "\n" }
+
+            END {
+                process_record()
+                if (other > 0)
+                    print "WARNING: " other " headers of " f " do not contain a valid identifier" > "/dev/stderr"
+            }
+        ' "$file" > "$output_file"
+
+        # Sanity check: output cannot contain more lines than input
+        if [ "$(wc -l < "$file")" -lt "$(wc -l < "$output_file")" ]; then
+            echo "ERROR: line count differs in $output_file" >&2
+            n_errors=$((n_errors + 1))
+        fi
+    done
+
+    [ "$n_errors" -eq 0 ]
+}
 
 ### MAIN
 main () {
@@ -560,8 +754,34 @@ main () {
         merge_and_compare_tables $workdir/tmp/pmiren_species_mature_ids.txt $workdir/tmp/pmiren_species_hairpin_ids.txt 2 2 '1.2,2.2,1.1,2.1' $workdir/tmp/01-pmiren_species_ids.csv $workdir/tmp/01-pmiren_species_ids_diff.csv $workdir/tmp
         echo "Done!"
 
+        # Assign new identifiers to species that share the same one
+        echo "Resolving duplicated identifiers in PmiREN..."
+        resolve_duplicated_species_ids \
+            $workdir/tmp/01-pmiren_species_ids.csv \
+            $workdir/tmp/01-pmiren_species_ids_unique.csv \
+            4 \
+            $workdir/tmp/01-pmiren_species_ids_changes.csv
+        echo "Done!"
+
+        # Generate PmiREN FASTA files with the new identifiers
+        echo "Updating identifiers in PmiREN FASTA files..."
+        rm -rf $workdir/pmiren_mod
+        update_pmiren_fasta_ids $workdir/tmp/01-pmiren_species_ids_unique.csv "$pmiren" mature $workdir/pmiren_mod || exit 1
+        update_pmiren_fasta_ids $workdir/tmp/01-pmiren_species_ids_unique.csv "$pmiren_hairpin" hairpin $workdir/pmiren_mod || exit 1
+
+        # From here on, use the new files
+        pmiren=$(find $workdir/pmiren_mod -type f -name "*_mature.fa" | sort | tr '\n' ' ')
+        pmiren_hairpin=$(find $workdir/pmiren_mod -type f -name "*_hairpin.fa" | sort | tr '\n' ' ')
+        echo "Done!"
+
+        # The new files already use the final identifiers: build a table that
+        # matches them (columns 2 and 3 are replaced by column 4)
+        awk 'BEGIN {FS=OFS=","} {$2=$4; $3=$4; print}' \
+            $workdir/tmp/01-pmiren_species_ids_unique.csv \
+            > $workdir/tmp/01-pmiren_species_ids_final.csv
+
         # Save the path of the file to merge in a variable
-        file_to_merge=$workdir/tmp/01-pmiren_species_ids.csv
+        file_to_merge=$workdir/tmp/01-pmiren_species_ids_final.csv
         file_to_merge_diff=$workdir/tmp/01-pmiren_species_ids_diff.csv
 
         # If only PmiREN has been provided
@@ -640,7 +860,7 @@ main () {
 
         # Merge miRBase and PmiREN tables
         echo "Comparing identifiers between miRBase and PmiREN databases..."
-        merge_and_compare_tables $workdir/tmp/02-mirbase_species_ids.csv $workdir/tmp/01-pmiren_species_ids.csv 1 1 '1.1,2.1,1.4,2.4' $workdir/tmp/03-mirbase_pmiren_species_ids.csv $workdir/tmp/03-mirbase_pmiren_species_ids_diff.csv $workdir/tmp
+        merge_and_compare_tables $workdir/tmp/02-mirbase_species_ids.csv $workdir/tmp/01-pmiren_species_ids_final.csv 1 1 '1.1,2.1,1.4,2.4' $workdir/tmp/03-mirbase_pmiren_species_ids.csv $workdir/tmp/03-mirbase_pmiren_species_ids_diff.csv $workdir/tmp
         echo "Done!"
         
         # Save the path of the file to merge in a variable

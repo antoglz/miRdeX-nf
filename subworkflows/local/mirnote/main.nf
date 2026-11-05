@@ -55,6 +55,7 @@ workflow MIRNOTE {
     take:
     ch_input                // channel: [[id:val(id), species:val(species), genome:val(genome)], fasta/fastq]
     ch_species              // channel: [ 'species_name', 'species_name2', ... ]
+    species_synonyms        // path: TSV file containing species synonyms
     databases               // string: "mirbase,srnaanno,pmiren"
     substitutions           // integer: 1
     five_add                // integer: 0
@@ -81,7 +82,7 @@ workflow MIRNOTE {
     */
 
     // Prepare the databases for the annotation
-    PREPARE_MIRNA_DATABASES(ch_species, databases)
+    PREPARE_MIRNA_DATABASES(ch_species, databases, species_synonyms)
 
     // Use the species name to combine the databases and input channels
     PREPARE_MIRNA_DATABASES.out.dbs
