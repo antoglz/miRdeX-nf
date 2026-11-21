@@ -51,6 +51,7 @@ process MERGE_AND_FILTER_MATURE_PRECURSOR_BLAST {
                 # Remove undesired strings (5p/3p too)
                 gsub(/-?(5p|3p)-?/, "-", id_clean);
                 gsub(/-?(Known|mature|star)-?/, "-", id_clean);
+                gsub(/[*]/, "", id_clean);
                 gsub(/^-+|-+\$/, "", id_clean);
                 gsub(/--+/, "-", id_clean);
 
